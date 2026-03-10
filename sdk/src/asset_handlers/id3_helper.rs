@@ -308,6 +308,7 @@ pub(crate) fn get_object_locations(
 
 /// Patches the C2PA manifest in-place within an ID3-tagged asset file.
 /// `store_bytes` **must** be the same length as the existing manifest.
+#[allow(unused)]
 pub(crate) fn patch_cai_in_id3_asset(asset_path: &Path, store_bytes: &[u8]) -> Result<()> {
     let mut asset = OpenOptions::new()
         .write(true)

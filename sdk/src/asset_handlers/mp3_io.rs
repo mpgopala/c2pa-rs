@@ -20,7 +20,7 @@ use std::{
 use id3::Tag;
 
 use crate::{
-    asset_handlers::id3_audio::{self, ID3V2Header},
+    asset_handlers::id3_helper::{self, ID3V2Header},
     asset_io::{
         rename_or_move, AssetIO, AssetPatch, CAIRead, CAIReadWrite, CAIReader, CAIWriter,
         HashObjectPositions, RemoteRefEmbed, RemoteRefEmbedType,
@@ -92,7 +92,7 @@ impl CAIReader for Mp3IO {
         let mut manifest: Option<Vec<u8>> = None;
         if let Ok(tag) = Tag::read_from2(input_stream) {
             for eo in tag.encapsulated_objects() {
-                if id3_audio::is_c2pa_mime_type(&eo.mime_type) {
+                if id3_helper::is_c2pa_mime_type(&eo.mime_type) {
                     match manifest {
                         Some(_) => return Err(Error::TooManyManifestStores),
                         None => manifest = Some(eo.data.clone()),
@@ -104,7 +104,7 @@ impl CAIReader for Mp3IO {
     }
 
     fn read_xmp(&self, input_stream: &mut dyn CAIRead) -> Option<String> {
-        id3_audio::read_xmp_from_id3(input_stream)
+        id3_helper::read_xmp_from_id3(input_stream)
     }
 }
 
@@ -134,7 +134,7 @@ impl RemoteRefEmbed for Mp3IO {
                 let header = read_header(source_stream)?;
                 let id3_end = header.map_or(0, |h| h.get_size()) as u64;
                 let current_xmp = self.read_xmp(source_stream);
-                id3_audio::embed_xmp_to_id3_stream(
+                id3_helper::embed_xmp_to_id3_stream(
                     source_stream,
                     output_stream,
                     url,
@@ -214,7 +214,7 @@ impl CAIWriter for Mp3IO {
         input_stream.rewind()?;
         let header = read_header(input_stream)?;
         let id3_end = header.map_or(0, |h| h.get_size()) as u64;
-        id3_audio::write_cai_with_id3(input_stream, output_stream, store_bytes, id3_end)
+        id3_helper::write_cai_with_id3(input_stream, output_stream, store_bytes, id3_end)
     }
 
     fn get_object_locations_from_stream(
@@ -223,7 +223,7 @@ impl CAIWriter for Mp3IO {
     ) -> Result<Vec<HashObjectPositions>> {
         let mut output_stream = Cursor::new(Vec::<u8>::new());
         add_required_frame(&self._mp3_format, input_stream, &mut output_stream)?;
-        id3_audio::get_object_locations(&mut output_stream)
+        id3_helper::get_object_locations(&mut output_stream)
     }
 
     fn remove_cai_store_from_stream(
@@ -237,7 +237,7 @@ impl CAIWriter for Mp3IO {
 
 impl AssetPatch for Mp3IO {
     fn patch_cai_store(&self, asset_path: &Path, store_bytes: &[u8]) -> Result<()> {
-        id3_audio::patch_cai_in_id3_asset(asset_path, store_bytes)
+        id3_helper::patch_cai_in_id3_asset(asset_path, store_bytes)
     }
 }
 
@@ -256,7 +256,7 @@ pub mod tests {
 
     use super::*;
     use crate::{
-        asset_handlers::id3_audio::test_helpers,
+        asset_handlers::id3_helper::test_helpers,
         error::Error,
         utils::{io_utils::tempdirectory, test::fixture_path},
     };

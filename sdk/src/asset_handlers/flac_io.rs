@@ -21,7 +21,7 @@ use id3::Tag;
 use metaflac::Tag as FlacTag;
 
 use crate::{
-    asset_handlers::id3_audio::{self, ID3V2Header},
+    asset_handlers::id3_helper::{self, ID3V2Header},
     asset_io::{
         rename_or_move, AssetIO, AssetPatch, CAIRead, CAIReadWrite, CAIReadWrapper, CAIReader,
         CAIWriter, HashObjectPositions, RemoteRefEmbed, RemoteRefEmbedType,
@@ -120,7 +120,7 @@ impl CAIReader for FlacIO {
             };
             if let Ok(tag) = Tag::read_from2(reader) {
                 for eo in tag.encapsulated_objects() {
-                    if id3_audio::is_c2pa_mime_type(&eo.mime_type) {
+                    if id3_helper::is_c2pa_mime_type(&eo.mime_type) {
                         match &manifest {
                             Some(_) => return Err(Error::TooManyManifestStores),
                             None => manifest = Some(eo.data.clone()),
@@ -147,7 +147,7 @@ impl CAIReader for FlacIO {
         if header.is_none() {
             return None;
         }
-        id3_audio::read_xmp_from_id3(input_stream)
+        id3_helper::read_xmp_from_id3(input_stream)
     }
 }
 
@@ -177,7 +177,7 @@ impl RemoteRefEmbed for FlacIO {
                 let header = read_header(source_stream)?;
                 let id3_end = header.map_or(0, |h| h.get_size()) as u64;
                 let current_xmp = self.read_xmp(source_stream);
-                id3_audio::embed_xmp_to_id3_stream(
+                id3_helper::embed_xmp_to_id3_stream(
                     source_stream,
                     output_stream,
                     url,
@@ -257,7 +257,7 @@ impl CAIWriter for FlacIO {
         input_stream.rewind()?;
         let header = read_header(input_stream)?;
         let id3_end = header.map_or(0, |h| h.get_size()) as u64;
-        id3_audio::write_cai_with_id3(input_stream, output_stream, store_bytes, id3_end)
+        id3_helper::write_cai_with_id3(input_stream, output_stream, store_bytes, id3_end)
     }
 
     fn get_object_locations_from_stream(
@@ -266,7 +266,7 @@ impl CAIWriter for FlacIO {
     ) -> Result<Vec<HashObjectPositions>> {
         let mut output_stream = Cursor::new(Vec::<u8>::new());
         add_required_frame(input_stream, &mut output_stream)?;
-        id3_audio::get_object_locations(&mut output_stream)
+        id3_helper::get_object_locations(&mut output_stream)
     }
 
     fn remove_cai_store_from_stream(
@@ -280,7 +280,7 @@ impl CAIWriter for FlacIO {
 
 impl AssetPatch for FlacIO {
     fn patch_cai_store(&self, asset_path: &Path, store_bytes: &[u8]) -> Result<()> {
-        id3_audio::patch_cai_in_id3_asset(asset_path, store_bytes)
+        id3_helper::patch_cai_in_id3_asset(asset_path, store_bytes)
     }
 }
 
@@ -297,7 +297,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        asset_handlers::id3_audio::test_helpers,
+        asset_handlers::id3_helper::test_helpers,
         error::Error,
         utils::{io_utils::tempdirectory, test::fixture_path},
     };
