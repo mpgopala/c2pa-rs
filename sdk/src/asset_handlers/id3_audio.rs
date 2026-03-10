@@ -335,18 +335,110 @@ pub(crate) mod test_helpers {
     #![allow(clippy::panic)]
     #![allow(clippy::unwrap_used)]
 
-    use std::{io::Cursor, path::Path};
+    use std::{io::Cursor, io::Seek, path::Path};
 
-    use std::io::Seek;
+    use id3::{
+        frame::{Content, EncapsulatedObject},
+        Frame, Tag, TagLike, Version,
+    };
 
     use crate::{
         asset_io::{AssetIO, HashBlockObjectType, RemoteRefEmbed, RemoteRefEmbedType},
         error::Error,
-        utils::{
-            hash_utils::vec_compare,
-            xmp_inmemory_utils::extract_provenance,
-        },
+        utils::{hash_utils::vec_compare, xmp_inmemory_utils::extract_provenance},
     };
+
+    // ── ID3 builder helpers ──────────────────────────────────────────────────
+
+    /// Build a raw 10-byte ID3v2 header with a synch-safe encoded `tag_size`.
+    pub(crate) fn id3_header(version_major: u8, tag_size: u32) -> [u8; 10] {
+        let mut h = [0u8; 10];
+        h[0..3].copy_from_slice(b"ID3");
+        h[3] = version_major;
+        h[4] = 0;
+        h[5] = 0;
+        h[6] = ((tag_size >> 21) & 0x7f) as u8;
+        h[7] = ((tag_size >> 14) & 0x7f) as u8;
+        h[8] = ((tag_size >> 7) & 0x7f) as u8;
+        h[9] = (tag_size & 0x7f) as u8;
+        h
+    }
+
+    /// Serialise `tag` using the `id3` crate then append `payload` verbatim.
+    ///
+    /// Used by both MP3 and FLAC tests to build in-memory streams for
+    /// testing ID3 frame parsing without needing real audio files.
+    pub(crate) fn id3_tag_with_payload(tag: Tag, payload: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        tag.write_to(&mut buf, Version::Id3v24).expect("write id3");
+        buf.extend_from_slice(payload);
+        buf
+    }
+
+    // ── Shared ID3/CAI read_cai tests ────────────────────────────────────────
+
+    /// Any bytes that are neither `"ID3"` nor a format-specific magic word must
+    /// cause `read_cai` to return `Error::UnsupportedType`.
+    pub(crate) fn run_read_cai_unsupported_type(handler: &dyn AssetIO) {
+        let mut buf = [0u8; 10].to_vec();
+        buf[0..4].copy_from_slice(b"XXXX");
+        let mut cursor = Cursor::new(buf);
+        match handler.get_reader().read_cai(&mut cursor) {
+            Err(Error::UnsupportedType) => {}
+            other => panic!("expected UnsupportedType for unknown magic, got {:?}", other),
+        }
+    }
+
+    /// A stream that is too short to hold a 10-byte header must cause `read_cai`
+    /// to return `Error::IoError`.
+    pub(crate) fn run_read_cai_io_error_too_short(handler: &dyn AssetIO) {
+        let mut cursor = Cursor::new(b"abc");
+        match handler.get_reader().read_cai(&mut cursor) {
+            Err(Error::IoError(_)) => {}
+            other => panic!("expected IoError for short stream, got {:?}", other),
+        }
+    }
+
+    /// An ID3 tag containing two C2PA GEOB frames must cause `read_cai` to
+    /// return `TooManyManifestStores` (or `Ok` with one payload when the id3
+    /// crate deduplicates frames with the same ID).
+    ///
+    /// `audio_payload` is appended after the ID3 tag so format-specific stream
+    /// validation (e.g. the FLAC `fLaC` check) can be satisfied by the caller.
+    pub(crate) fn run_read_cai_too_many_manifest_stores(
+        handler: &dyn AssetIO,
+        audio_payload: &[u8],
+    ) {
+        let mut tag = Tag::new();
+        for data in [b"first".as_ref(), b"second".as_ref()] {
+            let geob = Frame::with_content(
+                "GEOB",
+                Content::EncapsulatedObject(EncapsulatedObject {
+                    mime_type: super::GEOB_FRAME_MIME_TYPE.to_string(),
+                    filename: super::GEOB_FRAME_FILE_NAME.to_string(),
+                    description: super::GEOB_FRAME_DESCRIPTION.to_string(),
+                    data: data.to_vec(),
+                }),
+            );
+            let _ = tag.add_frame(geob);
+        }
+        let buf = id3_tag_with_payload(tag, audio_payload);
+        let mut cursor = Cursor::new(buf);
+        match handler.get_reader().read_cai(&mut cursor) {
+            Err(Error::TooManyManifestStores) => {}
+            Ok(data) => {
+                assert!(
+                    data == b"first" || data == b"second",
+                    "if one GEOB returned, must be first or second; got {:?}",
+                    data
+                );
+            }
+            other => panic!(
+                "expected TooManyManifestStores or Ok(first|second), got {:?}",
+                other
+            ),
+        }
+    }
 
     /// Write arbitrary data then read it back and verify round-trip equality.
     pub(crate) fn run_write_read_roundtrip(handler: &dyn AssetIO, fixture: &Path, tmp: &Path) {

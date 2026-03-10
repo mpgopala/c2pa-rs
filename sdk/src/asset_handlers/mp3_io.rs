@@ -252,9 +252,12 @@ pub mod tests {
     #![allow(clippy::panic)]
     #![allow(clippy::unwrap_used)]
 
+    use std::{io::Cursor, path::Path};
+
     use super::*;
     use crate::{
         asset_handlers::id3_audio::test_helpers,
+        error::Error,
         utils::{io_utils::tempdirectory, test::fixture_path},
     };
 
@@ -344,5 +347,96 @@ pub mod tests {
         let temp = tempdirectory().unwrap();
         let out = crate::utils::test::temp_dir_path(&temp, "embed_ref.mp3");
         test_helpers::run_embed_reference_file_path(&handler, &handler, &fixture(), &out);
+    }
+
+    #[test]
+    fn test_read_cai_success_with_manifest() {
+        let handler = Mp3IO::new("mp3");
+        let temp = tempdirectory().unwrap();
+        let out = crate::utils::test::temp_dir_path(&temp, "with_manifest.mp3");
+        test_helpers::run_read_cai_success_with_manifest(&handler, &fixture(), &out);
+    }
+
+    #[test]
+    fn test_read_cai_too_many_manifest_stores() {
+        // MP3 does not validate the audio payload, so an empty slice is fine.
+        test_helpers::run_read_cai_too_many_manifest_stores(&Mp3IO::new("mp3"), &[]);
+    }
+
+    #[test]
+    fn test_get_handler_and_reader() {
+        let mp3_io = Mp3IO::new("mp3");
+        let handler = mp3_io.get_handler("audio/mpeg");
+        let reader = mp3_io.get_reader();
+        let mut f = std::fs::File::open(fixture()).unwrap();
+        match reader.read_cai(&mut f) {
+            Err(Error::JumbfNotFound) => {}
+            other => panic!("unexpected result for fixture without manifest: {:?}", other),
+        }
+        assert!(handler.supported_types().contains(&"audio/mpeg"));
+    }
+
+    #[test]
+    fn test_read_cai_store_file_not_found() {
+        let mp3_io = Mp3IO::new("mp3");
+        match mp3_io.read_cai_store(Path::new("/nonexistent/sample.mp3")) {
+            Err(Error::IoError(_)) => {}
+            other => panic!("expected IoError for missing file, got {:?}", other),
+        }
+    }
+
+    // ── MP3-specific tests ───────────────────────────────────────────────────
+
+    /// A bare MPEG stream (MPEG sync word, no ID3 tag) contains no C2PA manifest.
+    #[test]
+    fn test_read_cai_store_no_id3() {
+        let mp3_io = Mp3IO::new("mp3");
+        // Minimal MPEG frame sync: first 11 bits set (0xFF 0xE0 …).
+        let mpeg_stream: Vec<u8> = std::iter::once(0xFF_u8)
+            .chain(std::iter::once(0xE0_u8))
+            .chain(std::iter::repeat(0).take(20))
+            .collect();
+        let mut cursor = Cursor::new(mpeg_stream);
+        match mp3_io.read_cai(&mut cursor) {
+            Err(Error::JumbfNotFound) => {}
+            other => panic!("expected JumbfNotFound for bare MPEG stream, got {:?}", other),
+        }
+    }
+
+    /// `write_cai` (via `read_header`) returns `UnsupportedType` for unknown magic.
+    #[test]
+    fn test_write_cai_unsupported_type() {
+        let mp3_io = Mp3IO::new("mp3");
+        let mut input = Cursor::new(b"XXXX\x00\x00\x00\x00\x00\x00".to_vec());
+        let mut output = Cursor::new(Vec::new());
+        match mp3_io.write_cai(&mut input, &mut output, &[1, 2, 3]) {
+            Err(Error::UnsupportedType) => {}
+            other => panic!("expected UnsupportedType for unknown magic, got {:?}", other),
+        }
+    }
+
+    /// `write_cai` (via `read_header`) returns `IoError` when the stream is too short.
+    #[test]
+    fn test_write_cai_io_error_too_short() {
+        let mp3_io = Mp3IO::new("mp3");
+        let mut input = Cursor::new(b"abc".to_vec());
+        let mut output = Cursor::new(Vec::new());
+        match mp3_io.write_cai(&mut input, &mut output, &[1, 2, 3]) {
+            Err(Error::IoError(_)) => {}
+            other => panic!("expected IoError for short stream, got {:?}", other),
+        }
+    }
+
+    /// `write_cai` (via `read_header`) returns `UnsupportedType` for ID3v1 headers
+    /// (version < 2 is not a valid ID3v2 tag).
+    #[test]
+    fn test_write_cai_invalid_id3_version() {
+        let mp3_io = Mp3IO::new("mp3");
+        let mut input = Cursor::new(test_helpers::id3_header(1, 0).to_vec());
+        let mut output = Cursor::new(Vec::new());
+        match mp3_io.write_cai(&mut input, &mut output, &[1, 2, 3]) {
+            Err(Error::UnsupportedType) => {}
+            other => panic!("expected UnsupportedType for ID3v1 header, got {:?}", other),
+        }
     }
 }

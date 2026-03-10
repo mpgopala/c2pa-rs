@@ -295,13 +295,9 @@ mod tests {
     use std::io::Cursor;
     use std::path::Path;
 
-    use id3::frame::{Content, EncapsulatedObject};
-    use id3::{Frame, Tag, TagLike, Version};
-
     use super::*;
     use crate::{
         asset_handlers::id3_audio::test_helpers,
-        asset_io::HashBlockObjectType,
         error::Error,
         utils::{io_utils::tempdirectory, test::fixture_path},
     };
@@ -309,37 +305,8 @@ mod tests {
     /// Minimal valid FLAC stream (no ID3 prefix).
     const MINIMAL_FLAC: &[u8] = include_bytes!("../../tests/fixtures/sample1.flac");
 
-    /// C2PA GEOB mime type constant for building test tags.
-    const GEOB_MIME: &str = "application/c2pa";
-    const GEOB_FILENAME: &str = "c2pa";
-    const GEOB_DESC: &str = "c2pa manifest store";
-
     fn fixture() -> std::path::PathBuf {
         fixture_path("sample1.flac")
-    }
-
-    // ── ID3 header builder helpers ───────────────────────────────────────────
-
-    /// Build a 10-byte ID3v2 header with a synch-safe encoded tag size.
-    fn id3_header(version_major: u8, tag_size: u32) -> [u8; 10] {
-        let mut h = [0u8; 10];
-        h[0..3].copy_from_slice(b"ID3");
-        h[3] = version_major;
-        h[4] = 0;
-        h[5] = 0;
-        h[6] = ((tag_size >> 21) & 0x7f) as u8;
-        h[7] = ((tag_size >> 14) & 0x7f) as u8;
-        h[8] = ((tag_size >> 7) & 0x7f) as u8;
-        h[9] = (tag_size & 0x7f) as u8;
-        h
-    }
-
-    /// Build an in-memory stream: ID3 tag bytes followed by a FLAC tail.
-    fn id3_tag_plus_flac(tag: Tag, flac_tail: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        tag.write_to(&mut buf, Version::Id3v24).expect("write id3");
-        buf.extend_from_slice(flac_tail);
-        buf
     }
 
     // ── shared behavioral tests ──────────────────────────────────────────────
@@ -448,21 +415,13 @@ mod tests {
 
     #[test]
     fn test_read_cai_unsupported_type() {
-        let flac_io = FlacIO::new("flac");
-        let mut buf = vec![0u8; 10];
-        buf[0..4].copy_from_slice(b"XXXX");
-        buf.extend_from_slice(MINIMAL_FLAC);
-        let mut cursor = Cursor::new(buf);
-        match flac_io.read_cai(&mut cursor) {
-            Err(Error::UnsupportedType) => {}
-            other => panic!("expected UnsupportedType, got {:?}", other),
-        }
+        test_helpers::run_read_cai_unsupported_type(&FlacIO::new("flac"));
     }
 
     #[test]
     fn test_read_cai_invalid_id3_version() {
         let flac_io = FlacIO::new("flac");
-        let mut buf = id3_header(1, 0).to_vec();
+        let mut buf = test_helpers::id3_header(1, 0).to_vec();
         buf.extend_from_slice(MINIMAL_FLAC);
         let mut cursor = Cursor::new(buf);
         match flac_io.read_cai(&mut cursor) {
@@ -473,18 +432,13 @@ mod tests {
 
     #[test]
     fn test_read_cai_io_error_too_short() {
-        let flac_io = FlacIO::new("flac");
-        let mut cursor = Cursor::new(b"abc");
-        match flac_io.read_cai(&mut cursor) {
-            Err(Error::IoError(_)) => {}
-            other => panic!("expected IoError for short stream, got {:?}", other),
-        }
+        test_helpers::run_read_cai_io_error_too_short(&FlacIO::new("flac"));
     }
 
     #[test]
     fn test_read_cai_invalid_flac_after_id3() {
         let flac_io = FlacIO::new("flac");
-        let mut buf = id3_header(4, 0).to_vec();
+        let mut buf = test_helpers::id3_header(4, 0).to_vec();
         buf.extend_from_slice(b"XXXX");
         buf.extend_from_slice(MINIMAL_FLAC);
         let mut cursor = Cursor::new(buf);
@@ -496,69 +450,7 @@ mod tests {
 
     #[test]
     fn test_read_cai_too_many_manifest_stores() {
-        let mut tag = Tag::new();
-        let geob = Frame::with_content(
-            "GEOB",
-            Content::EncapsulatedObject(EncapsulatedObject {
-                mime_type: GEOB_MIME.to_string(),
-                filename: GEOB_FILENAME.to_string(),
-                description: GEOB_DESC.to_string(),
-                data: b"first".to_vec(),
-            }),
-        );
-        tag.add_frame(geob);
-        let geob2 = Frame::with_content(
-            "GEOB",
-            Content::EncapsulatedObject(EncapsulatedObject {
-                mime_type: GEOB_MIME.to_string(),
-                filename: GEOB_FILENAME.to_string(),
-                description: GEOB_DESC.to_string(),
-                data: b"second".to_vec(),
-            }),
-        );
-        tag.add_frame(geob2);
-        let buf = id3_tag_plus_flac(tag, MINIMAL_FLAC);
-        let flac_io = FlacIO::new("flac");
-        let mut cursor = Cursor::new(buf);
-        let result = flac_io.read_cai(&mut cursor);
-        match result {
-            Err(Error::TooManyManifestStores) => {}
-            Ok(data) => {
-                assert!(
-                    data == b"first" || data == b"second",
-                    "if one GEOB returned, must be first or second; got {:?}",
-                    data
-                );
-            }
-            other => panic!(
-                "expected TooManyManifestStores or Ok(first|second), got {:?}",
-                other
-            ),
-        }
-    }
-
-    #[test]
-    fn test_get_object_locations_flac() {
-        let handler = FlacIO::new("flac");
-        let temp = tempdirectory().unwrap();
-        let out = crate::utils::test::temp_dir_path(&temp, "sample1-locs.flac");
-        std::fs::copy(fixture(), &out).unwrap();
-        handler.save_cai_store(&out, &[1, 2, 3, 4, 5]).unwrap();
-        let positions = handler.get_object_locations(&out).unwrap();
-        assert!(!positions.is_empty());
-        let file_len = std::fs::metadata(&out).unwrap().len() as usize;
-        let sum_len: usize = positions.iter().map(|p| p.length).sum();
-        assert_eq!(sum_len, file_len);
-        let cai_idx = positions
-            .iter()
-            .position(|p| p.htype == HashBlockObjectType::Cai)
-            .unwrap();
-        let other_before = positions
-            .iter()
-            .position(|p| p.htype == HashBlockObjectType::Other && p.offset == 0)
-            .unwrap();
-        assert_eq!(positions[other_before].offset, 0);
-        assert!(positions[cai_idx].offset + positions[cai_idx].length <= file_len);
+        test_helpers::run_read_cai_too_many_manifest_stores(&FlacIO::new("flac"), MINIMAL_FLAC);
     }
 
     #[test]
